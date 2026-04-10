@@ -1,6 +1,11 @@
+import os
 import torch
 import torch.nn as nn
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation, PillowWriter
 
 from States import VehicleState
 
@@ -51,6 +56,90 @@ class ParkingVehiclePINN():
             create_graph=True
         )[0]
 
+    @staticmethod
+    def capture_snapshot(model, device, epoch, t_dense):
+        model.eval()
+        with torch.no_grad():
+            x, y, theta, v, a, delta, omega, alpha = model(t_dense)
+        model.train()
+        t_np = t_dense.cpu().numpy().flatten()
+        return {
+            'epoch': epoch,
+            't': t_np,
+            'x': x.cpu().numpy().flatten(),
+            'y': y.cpu().numpy().flatten(),
+            'theta': theta.cpu().numpy().flatten(),
+            'v': v.cpu().numpy().flatten(),
+            'a': a.cpu().numpy().flatten(),
+            'delta': delta.cpu().numpy().flatten(),
+            'omega': omega.cpu().numpy().flatten(),
+            'alpha': alpha.cpu().numpy().flatten(),
+        }
+
+    @staticmethod
+    def generate_gif(snapshots, save_path):
+        state_names = ['x', 'y', 'theta', 'v', 'a', 'delta', 'omega', 'alpha']
+
+        # Pre-compute axis limits across all snapshots
+        xy_min = min(s['x'].min() for s in snapshots)
+        xy_min = min(xy_min, min(s['y'].min() for s in snapshots))
+        xy_max = max(s['x'].max() for s in snapshots)
+        xy_max = max(xy_max, max(s['y'].max() for s in snapshots))
+        margin = max(1.0, (xy_max - xy_min) * 0.1)
+        xy_lim = (min(xy_min - margin, -2), max(xy_max + margin, 12))
+
+        state_limits = {}
+        for name in state_names:
+            lo = min(s[name].min() for s in snapshots)
+            hi = max(s[name].max() for s in snapshots)
+            pad = max(0.1, (hi - lo) * 0.1)
+            state_limits[name] = (lo - pad, hi + pad)
+
+        fig = plt.figure(figsize=(16, 10))
+        gs = fig.add_gridspec(4, 4, hspace=0.4, wspace=0.4)
+
+        ax_xy = fig.add_subplot(gs[:, :2])
+        axes_state = []
+        for i in range(4):
+            for j in range(2):
+                axes_state.append(fig.add_subplot(gs[i, 2 + j]))
+
+        def update(frame_idx):
+            snap = snapshots[frame_idx]
+
+            # Left panel: x-y trajectory
+            ax_xy.clear()
+            ax_xy.plot(snap['x'], snap['y'], 'b-', linewidth=1.5)
+            ax_xy.plot(snap['x'][0], snap['y'][0], 'go', markersize=10, label='Start')
+            ax_xy.plot(10.0, 10.0, 'r*', markersize=15, label='Target')
+            ax_xy.set_xlim(xy_lim)
+            ax_xy.set_ylim(xy_lim)
+            ax_xy.set_xlabel('x')
+            ax_xy.set_ylabel('y')
+            ax_xy.set_title(f'Trajectory (Epoch {snap["epoch"]})')
+            ax_xy.set_aspect('equal', adjustable='box')
+            ax_xy.legend(loc='upper left')
+            ax_xy.grid(True, alpha=0.3)
+
+            # Right panel: state variables vs time
+            for k, name in enumerate(state_names):
+                axes_state[k].clear()
+                axes_state[k].plot(snap['t'], snap[name], 'b-', linewidth=1.0)
+                axes_state[k].set_title(name, fontsize=9)
+                axes_state[k].set_ylim(state_limits[name])
+                axes_state[k].tick_params(labelsize=7)
+                axes_state[k].grid(True, alpha=0.3)
+                if k >= 6:
+                    axes_state[k].set_xlabel('t', fontsize=8)
+
+            fig.suptitle(f'Training Progress — Epoch {snap["epoch"]}', fontsize=14)
+
+        anim = FuncAnimation(fig, update, frames=len(snapshots), interval=200)
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        anim.save(save_path, writer=PillowWriter(fps=5))
+        plt.close(fig)
+        print(f"Saved training animation to {save_path}")
+
     def run(self):
         device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
         model = KinematicNN().to(device)
@@ -58,11 +147,16 @@ class ParkingVehiclePINN():
 
         wheelBase = 2.5
 
-
         start_state = VehicleState(x=0.0, y=0.0, theta=0.0, v=0.0, a=0.0, delta=0.0, omega=0.0, alpha=0.0)
         target_state = VehicleState(x=10.0, y=10.0, theta=0.0, v=10.0, a=0.0, delta=0.0, omega=0.0, alpha=0.0)
 
-        for epoch in range(10000):
+        # Dense time grid for visualization snapshots
+        t_dense = torch.linspace(0, 60, 200, device=device).unsqueeze(1)
+        snapshots = []
+        total_epochs = 10000
+        capture_interval = 200
+
+        for epoch in range(total_epochs):
             optimizer.zero_grad()
 
             # boundary conditions: start and end states
@@ -117,6 +211,13 @@ class ParkingVehiclePINN():
                       f"Boundary: {loss_boundary.item():.4f} | "
                       f"Constraints: {loss_constraints.item():.4f}")
 
+            # Capture snapshots for visualization
+            if epoch == 0 or epoch % capture_interval == 0 or epoch == total_epochs - 1:
+                snapshots.append(self.capture_snapshot(model, device, epoch, t_dense))
+
+        # Generate animated GIF after training
+        gif_path = os.path.join(os.path.dirname(__file__), 'training_progress.gif')
+        self.generate_gif(snapshots, gif_path)
 
 
 if __name__ == "__main__":
