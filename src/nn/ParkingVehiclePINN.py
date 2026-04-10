@@ -59,15 +59,15 @@ class ParkingVehiclePINN():
         wheelBase = 2.5
 
 
-        start_state = VehicleState(x=0.0, y=0.0, theta=0.0, v=0.0, a=0.0, delta=0.0, omega=0.0, alpha=0.0).to_tensor(device)
-        target_state = VehicleState(x=10.0, y=10.0, theta=0.0, v=10.0, a=0.0, delta=0.0, omega=0.0, alpha=0.0).to_tensor(device)
+        start_state = VehicleState(x=0.0, y=0.0, theta=0.0, v=0.0, a=0.0, delta=0.0, omega=0.0, alpha=0.0)
+        target_state = VehicleState(x=10.0, y=10.0, theta=0.0, v=10.0, a=0.0, delta=0.0, omega=0.0, alpha=0.0)
 
-        for i in range(1000):
+        for epoch in range(10000):
             optimizer.zero_grad()
 
             # boundary conditions: start and end states
-            t_start = torch.tensor([0.0], device=device, requires_grad=True)
-            t_goal = torch.tensor([60.0], device=device, requires_grad=True)
+            t_start = torch.tensor([[0.0]], device=device, requires_grad=True)
+            t_goal = torch.tensor([[60.0]], device=device, requires_grad=True)
 
             x0, y0, theta0, v0, a0, delta0, omega0, alpha0 = model(t_start)
             xT, yT, thetaT, vT, aT, deltaT, omegaT, alphaT = model(t_goal)
@@ -78,4 +78,47 @@ class ParkingVehiclePINN():
             loss_boundary = loss_start + loss_goal
 
             # physics constraints: kinematic equations
+            t_colloc = torch.rand((100, 1), requires_grad=True, device=device)
+            x, y, theta, v, a, delta, omega, alpha = model(t_colloc)
 
+            dx_dt = self.get_gradient(x, t_colloc)
+            dy_dt = self.get_gradient(y, t_colloc)
+            dtheta_dt = self.get_gradient(theta, t_colloc)
+            dv_dt = self.get_gradient(v, t_colloc)
+            da_dt = self.get_gradient(a, t_colloc)
+            ddelta_dt = self.get_gradient(delta, t_colloc)
+            domega_dt = self.get_gradient(omega, t_colloc)
+            dalpha_dt = self.get_gradient(alpha, t_colloc)
+
+            # Formulate residuals (Left side minus Right side = 0)
+            res_x = dx_dt - (v * torch.cos(theta))
+            res_y = dy_dt - (v * torch.sin(theta))
+            res_theta = dtheta_dt - ((v / wheelBase) * torch.tan(delta))
+            res_v = dv_dt - a
+            res_a = da_dt - 0.0
+            res_delta = ddelta_dt - omega
+            res_omega = domega_dt - alpha
+
+            loss_physics = torch.mean(res_x**2 + res_y**2 + res_theta**2 + res_v**2 + res_a**2 + res_delta**2 + res_omega**2 + dalpha_dt**2)
+            
+            # penalize extreme steering angles to prevent tan(delta) from blowing up
+            loss_constraints = torch.mean(torch.relu(torch.abs(delta) - 0.6))
+
+            loss = (100.0 * loss_boundary) + \
+                (1.0 * loss_physics) + \
+                (1.0 * loss_constraints)
+
+            loss.backward()
+            optimizer.step()
+
+            if epoch % 500 == 0:
+                print(f"Epoch {epoch} | Total Loss: {loss.item():.4f} | "
+                      f"Physics: {loss_physics.item():.4f} | "
+                      f"Boundary: {loss_boundary.item():.4f} | "
+                      f"Constraints: {loss_constraints.item():.4f}")
+
+
+
+if __name__ == "__main__":
+    parking_vehicle_pinn = ParkingVehiclePINN()
+    parking_vehicle_pinn.run()
