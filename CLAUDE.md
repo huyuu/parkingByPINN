@@ -1,0 +1,1 @@
+use `source .venv/bin/activate && arch -arm64 python` to run python
