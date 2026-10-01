@@ -98,55 +98,61 @@ class ParkingVehiclePINN():
         fig, ax = plt.subplots(figsize=(8, 8))
         trail_line, = ax.plot([], [], 'b-', linewidth=1, alpha=0.4)
 
-        # rear_axle_offset: distance from vehicle center to rear axle
-        rear_axle_offset = vehicle_length / 2 - 0.5  # rear axle ~0.5m from rear
+        # Rear overhang: distance from rear axle to rear of vehicle
+        rear_overhang = (vehicle_length - wheelBase) / 2
 
-        def draw_vehicle_rect(ax, cx, cy, th):
-            """Return a rotated rectangle patch centered at (cx, cy) with heading th."""
+        def draw_vehicle_rect(ax, rear_ax_x, rear_ax_y, th):
+            """Return a rotated rectangle with rear axle at (rear_ax_x, rear_ax_y)."""
             cos_t, sin_t = np.cos(th), np.sin(th)
-            # corners relative to center
-            hw, hl = vehicle_width / 2, vehicle_length / 2
+            hw = vehicle_width / 2
+            # Rectangle corners in local frame (rear axle at origin)
+            # x-axis: -rear_overhang (behind rear axle) to wheelBase + rear_overhang (front)
             corners = np.array([
-                [-hl, -hw],
-                [ hl, -hw],
-                [ hl,  hw],
-                [-hl,  hw],
+                [-rear_overhang,      -hw],
+                [wheelBase + rear_overhang, -hw],
+                [wheelBase + rear_overhang,  hw],
+                [-rear_overhang,       hw],
             ])
             rot = np.array([[cos_t, -sin_t], [sin_t, cos_t]])
-            rotated = corners @ rot.T + np.array([cx, cy])
+            rotated = corners @ rot.T + np.array([rear_ax_x, rear_ax_y])
             from matplotlib.patches import Polygon
             return Polygon(rotated, closed=True, facecolor='skyblue',
                            edgecolor='black', linewidth=1.5, zorder=5)
 
         def update(frame):
             ax.clear()
-            cx, cy, th, dt = x[frame], y[frame], theta[frame], delta[frame]
+            # (rx, ry) = rear axle position from the kinematic model
+            rx, ry, th, dt = x[frame], y[frame], theta[frame], delta[frame]
 
-            # Trail
+            # Trail (rear axle path)
             ax.plot(x[:frame+1], y[:frame+1], 'b-', linewidth=1, alpha=0.4)
             # Full path ghost
             ax.plot(x, y, color='gray', linewidth=0.5, alpha=0.2)
 
-            # Start and target markers
+            # Start and target markers (rear axle positions)
             ax.plot(x[0], y[0], 'go', markersize=8, label='Start')
             ax.plot(10.0, 10.0, 'r*', markersize=14, label='Target')
 
-            # Vehicle body
-            body = draw_vehicle_rect(ax, cx, cy, th)
+            # Vehicle body (anchored at rear axle)
+            body = draw_vehicle_rect(ax, rx, ry, th)
             ax.add_patch(body)
 
             cos_t, sin_t = np.cos(th), np.sin(th)
 
-            # Heading arrow from center
+            # Vehicle center for heading arrow
+            center_x = rx + (wheelBase / 2) * cos_t
+            center_y = ry + (wheelBase / 2) * sin_t
+
+            # Heading arrow from vehicle center
             arrow_len = vehicle_length * 0.6
-            ax.annotate('', xy=(cx + arrow_len * cos_t, cy + arrow_len * sin_t),
-                        xytext=(cx, cy),
+            ax.annotate('', xy=(center_x + arrow_len * cos_t, center_y + arrow_len * sin_t),
+                        xytext=(center_x, center_y),
                         arrowprops=dict(arrowstyle='->', color='red', lw=2),
                         zorder=10)
 
-            # Front axle position
-            front_x = cx + (vehicle_length / 2 - 0.5) * cos_t
-            front_y = cy + (vehicle_length / 2 - 0.5) * sin_t
+            # Front axle position (rear axle + wheelBase along heading)
+            front_x = rx + wheelBase * cos_t
+            front_y = ry + wheelBase * sin_t
 
             # Steering angle indicator (front wheel direction)
             steer_angle = th + dt
@@ -158,9 +164,7 @@ class ParkingVehiclePINN():
                         zorder=10)
 
             # Rear axle marker
-            rear_x = cx - (vehicle_length / 2 - 0.5) * cos_t
-            rear_y = cy - (vehicle_length / 2 - 0.5) * sin_t
-            ax.plot(rear_x, rear_y, 'ko', markersize=4, zorder=10)
+            ax.plot(rx, ry, 'ko', markersize=4, zorder=10)
 
             ax.set_xlim(lim)
             ax.set_ylim(lim)
@@ -316,14 +320,14 @@ class ParkingVehiclePINN():
 
         wheelBase = 2.5
 
-        start_state = VehicleState(x=0.0, y=0.0, theta=0.0, v=0.0, a=0.0, delta=0.0, omega=0.0, alpha=0.0)
-        target_state = VehicleState(x=10.0, y=10.0, theta=0.0, v=0.0, a=0.0, delta=0.0, omega=0.0, alpha=0.0)
+        start_state = VehicleState(x=5.0, y=5.0, theta=0.0, v=0.0, a=0.0, delta=0.0, omega=0.0, alpha=0.0)
+        target_state = VehicleState(x=0.0, y=5.0, theta=np.pi, v=0.0, a=0.0, delta=0.0, omega=0.0, alpha=0.0)
 
         # Dense time grid for visualization snapshots
         t_dense = torch.linspace(0, 60, 200, device=device).unsqueeze(1)
         snapshots = []
         total_epochs = 100000
-        capture_interval = 200
+        capture_interval = 1000
 
         loss_history = {'total': [], 'physics': [], 'boundary': [], 'constraints': []}
 
